@@ -11,10 +11,9 @@ CRITICAL RULES:
 3. Use Lucide React for icons.
 4. Ensure the component is responsive.
 5. Add subtle hover and active animations using Tailwind.
-6. The component MUST be a functional component exported as default: "export default function GeneratedComponent() { ... }"
-7. Include all necessary imports at the top (React, Lucide icons, etc.).
-8. Assume standard Tailwind utility classes are available.
-9. Do not include any explanations or markdown code blocks, just the raw code.`,
+6. The component should be a functional component exported as a named export.
+7. Do not include imports for React (unless needed for hooks like useState) or Lucide icons in the generated code itself if you are returning just a snippet, but for a full file, include all necessary imports.
+8. Assume common UI components from shadcn are available if needed, but prefer standard Tailwind for simplicity.`,
   tools: [...sandboxTools],
   maxSteps: 10,
 });
