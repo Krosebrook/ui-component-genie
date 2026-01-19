@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAgent, useBlinkAuth } from '@blinkdotnew/react';
+import type { Sandbox } from '@blinkdotnew/react';
 import { componentAgent } from '../lib/agents';
 import { blink } from '../lib/blink';
 import { Button } from '../components/ui/button';
@@ -12,17 +13,103 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 
 export const GeneratorPage: React.FC = () => {
-  const { user } = useBlinkAuth();
+  const { user, isAuthenticated } = useBlinkAuth();
   const [prompt, setPrompt] = useState('');
   const [generatedCode, setGeneratedCode] = useState('');
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [saveData, setSaveData] = useState({ name: '', description: '' });
   const [isSaving, setIsSaving] = useState(false);
+  const [sandbox, setSandbox] = useState<Sandbox | null>(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [isInitializingSandbox, setIsInitializingSandbox] = useState(false);
+
+  // Initialize sandbox
+  useEffect(() => {
+    if (!isAuthenticated || sandbox) return;
+
+    const initSandbox = async () => {
+      try {
+        setIsInitializingSandbox(true);
+        const sbx = await blink.sandbox.create({ template: 'devtools-base' });
+        
+        // Prepare sandbox with essential files
+        await sbx.commands.run(`
+          mkdir -p src &&
+          echo 'import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./index.css";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);' > src/main.tsx &&
+          echo '@tailwind base;
+@tailwind components;
+@tailwind utilities;' > src/index.css &&
+          echo 'import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+export default defineConfig({
+  plugins: [react()],
+  server: { host: "0.0.0.0", allowedHosts: true, port: 3000 }
+});' > vite.config.ts &&
+          echo '{
+  "name": "preview",
+  "type": "module",
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "lucide-react": "^0.453.0",
+    "framer-motion": "^11.11.10",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.10"
+  },
+  "scripts": {
+    "dev": "vite"
+  }
+}' > package.json &&
+          npm install &&
+          npm run dev -- --host 0.0.0.0 &
+        `, { timeoutMs: 0 });
+
+        setSandbox(sbx);
+      } catch (error) {
+        console.error('Failed to init sandbox:', error);
+        toast.error('Failed to initialize preview environment');
+      } finally {
+        setIsInitializingSandbox(false);
+      }
+    };
+
+    initSandbox();
+  }, [isAuthenticated, sandbox]);
 
   const { sendMessage, isLoading, messages } = useAgent({
     agent: componentAgent,
-    onFinish: (response) => {
+    sandbox: sandbox || undefined,
+    onFinish: async (response) => {
       setGeneratedCode(response.text);
+      
+      if (sandbox) {
+        try {
+          // Write generated code to App.tsx in sandbox
+          await sandbox.commands.run(`echo '${response.text.replace(/'/g, "'\\''")}' > src/App.tsx`);
+          setPreviewUrl(`https://${sandbox.getHost(3000)}`);
+        } catch (error) {
+          console.error('Failed to update sandbox:', error);
+        }
+      }
+      
       toast.success('Component generated successfully!');
     },
     onError: (error) => {
@@ -33,7 +120,9 @@ export const GeneratorPage: React.FC = () => {
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
-    await sendMessage(`Generate a React component for: ${prompt}`);
+    setGeneratedCode('');
+    setPreviewUrl('');
+    await sendMessage(`Generate a React component for: ${prompt}. Return ONLY the code, no markdown.`);
   };
 
   const handleSave = async () => {
@@ -80,6 +169,7 @@ export const GeneratorPage: React.FC = () => {
     setPrompt('');
     setGeneratedCode('');
     setSaveData({ name: '', description: '' });
+    setPreviewUrl('');
   };
 
   return (
@@ -106,7 +196,7 @@ export const GeneratorPage: React.FC = () => {
           />
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={handleClear}>Clear</Button>
-            <Button disabled={isLoading || !prompt} onClick={handleGenerate} className="gap-2">
+            <Button disabled={isLoading || !prompt || isInitializingSandbox} onClick={handleGenerate} className="gap-2">
               {isLoading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -132,15 +222,28 @@ export const GeneratorPage: React.FC = () => {
                 Preview
               </CardTitle>
             </CardHeader>
-            <CardContent className="flex-1 min-h-[400px] flex items-center justify-center bg-muted/20 rounded-b-lg border-t overflow-auto p-8">
-              {/* For a real app, we would use something like react-live or a sandbox here */}
-              <div className="text-center space-y-4">
-                <p className="text-sm text-muted-foreground">Preview rendering is coming soon.</p>
-                <div className="p-12 border-2 border-dashed border-muted rounded-xl bg-background/50">
-                   <Sparkles className="w-8 h-8 text-primary/40 mx-auto mb-2" />
-                   <p className="text-xs text-muted-foreground">Your component is ready below.</p>
+            <CardContent className="flex-1 min-h-[400px] flex flex-col bg-muted/20 rounded-b-lg border-t overflow-hidden p-0 relative">
+              {previewUrl ? (
+                <iframe 
+                  src={previewUrl} 
+                  className="w-full h-full border-none bg-white"
+                  title="Preview"
+                />
+              ) : (
+                <div className="flex-1 flex items-center justify-center p-8 text-center space-y-4">
+                  <div className="space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      {isLoading ? 'Wait a moment, we are rendering your component...' : 'Your preview will appear here after generation.'}
+                    </p>
+                    <div className="p-12 border-2 border-dashed border-muted rounded-xl bg-background/50">
+                       <Sparkles className={`w-8 h-8 mx-auto mb-2 ${isLoading ? 'text-primary animate-pulse' : 'text-primary/40'}`} />
+                       <p className="text-xs text-muted-foreground">
+                         {isInitializingSandbox ? 'Setting up preview environment...' : 'Ready to generate.'}
+                       </p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </CardContent>
           </Card>
 
